@@ -1,0 +1,14 @@
+Lalo Lite application
+Copyright 2026 WilliamLu-AI. All rights reserved.
+
+The application source and compiled application are proprietary. No open-source
+license is granted for these components by this repository.
+
+The independent present-plan Skill in skills/present-plan/ is licensed under
+Apache License 2.0, as provided by skills/present-plan/LICENSE.
+
+Third-party components retain their own license terms. See THIRD_PARTY_NOTICES.md
+and the licenses directory accompanying a binary distribution.
+
+This is a public Windows x64 preview. The application is not code-signed.
+All application rights remain reserved.
