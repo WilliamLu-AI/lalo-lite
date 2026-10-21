@@ -16,3 +16,5 @@
 @media(max-width:700px){.edge-open.left{z-index:24}}
 
 .voice-profile{border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}.voice-profile legend{font-weight:600;padding:0 6px}#voiceConnections{border-top:1px solid var(--line);padding-top:16px}#voiceConnections summary{cursor:pointer;font-weight:600}#voiceConfigStatus{color:var(--accent);font-size:13px;overflow-wrap:anywhere}
+
+.readiness-panel{flex:none;font-size:12px;line-height:1.7;color:var(--muted);border-bottom:1px solid var(--line);padding:8px 0;max-height:30vh;overflow:auto}.readiness-panel summary{cursor:pointer;color:var(--accent)}.readiness-panel ul{padding-left:20px}

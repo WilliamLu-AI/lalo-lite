@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import hmac
 import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -16,6 +16,8 @@ from .voice_owner import VoiceOwner
 from .paths import MODEL_PATH, DATA_ROOT
 from .voice_config import VoiceConfig
 from .cli import VERSION
+from .readiness import report, load_voice_store
+from .contracts import ProviderError
 
 settings = Settings()
 
@@ -23,7 +25,7 @@ settings = Settings()
 @asynccontextmanager
 async def lifespan(app):
     app.state.providers = Providers(settings)
-    app.state.voice_store = VoiceConfig(settings.get("VOICE_CONFIG_DIR", str(DATA_ROOT / "voice-config")), settings)
+    app.state.voice_store = load_voice_store(settings)
     model = MODEL_PATH
     app.state.tad = await asyncio.to_thread(TurnDetector, model) if model.exists() else None
     yield
@@ -44,15 +46,11 @@ def voice_store():
 
 
 def capabilities():
-    result=settings.capabilities()
-    store=getattr(app.state,'voice_store',None)
-    if store:
-        profiles=store.resolve()
-        for kind,flag in [('asr','asr'),('tts','tts'),('llm','chat')]:
-            p=profiles[kind]
-            result[flag]=bool(p['apiKey'] or (p['provider']=='compatible' and p['baseUrl']))
-        result['tiered']=bool((result['codex'] or result['claude']) and result['chat'])
-    return result
+    return status_report()['capabilities']
+
+
+def status_report():
+    return report(settings, getattr(app.state,'voice_store',None))
 
 
 def same_origin(request):
@@ -76,6 +74,7 @@ async def put_voice(request: Request):
         data=json.loads(raw)
         if not isinstance(data,dict): raise ValueError('Invalid configuration')
         result=voice_store().save(data)
+        result['diagnostics'] = status_report()
         return JSONResponse(result, headers={'Cache-Control':'no-store'})
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(400, str(exc)) from None
@@ -102,7 +101,12 @@ async def test_voice(request: Request):
             if kind=='asr':
                 pcm=base64.b64decode(data.get('pcm',''),validate=True)
                 if not pcm or len(pcm)%2 or len(pcm)>640000: raise ValueError('Provide PCM16 mono 16 kHz, up to 20 seconds')
-                result={'text':await runtime.transcribe(pcm)}
+                async def ignore(text): pass
+                stream = runtime.start_asr(ignore, [pcm])
+                try:
+                    result={'text':await stream.finish() if stream else await runtime.transcribe(pcm)}
+                finally:
+                    if stream: await stream.close()
             elif kind=='tts':
                 text=str(data.get('text') or '你好，这是 Lalo 的语音试听。')[:200]
                 chunks=[]
@@ -116,6 +120,8 @@ async def test_voice(request: Request):
                 if not isinstance(answer,dict): raise ValueError('Invalid model response')
                 result={'text':str(answer.get('speech',''))[:300]}
         return JSONResponse({**result,'elapsedMs':round((time.monotonic()-started)*1000)},headers={'Cache-Control':'no-store'})
+    except ProviderError as exc:
+        return JSONResponse({'detail':str(exc),'stage':exc.stage or kind,'code':exc.code},status_code=400,headers={'Cache-Control':'no-store'})
     except Exception as exc:
         # SDK exceptions can contain URLs/headers; never return their raw text.
         raise HTTPException(400,'连接测试失败（'+type(exc).__name__+'），请检查模型、地址、凭据和网络') from None
@@ -168,12 +174,14 @@ async def shutdown():
 
 @app.get('/')
 async def index():
+    if not (ROOT / 'web/app.bundle.js').is_file():
+        return HTMLResponse('<!doctype html><meta charset="utf-8"><title>Lalo setup required</title><h1>Frontend is not built</h1><p>In the source checkout run <code>npm ci</code> and <code>npm run build</code>, then reload this page.</p>', status_code=503)
     return FileResponse(ROOT / 'web/index.html')
 
 
 @app.get('/health')
 async def health():
-    return {'ok': True, 'app': 'lalo-lite', 'launchProtocol': 2, 'version': VERSION, 'capabilities': capabilities()}
+    return {'ok': True, 'app': 'lalo-lite', 'launchProtocol': 2, 'version': VERSION, **status_report()}
 
 
 @app.get('/launch/{token}')
@@ -195,7 +203,7 @@ async def websocket(ws: WebSocket):
     session = Session(ws, app.state.providers, settings, app.state.tad)
     session.voice_store = getattr(app.state, "voice_store", None)
     try:
-        await session.send('ready', capabilities=capabilities())
+        await session.send('ready', **status_report())
         while True:
             msg = await asyncio.wait_for(ws.receive(), 45)
             if msg['type'] == 'websocket.disconnect':

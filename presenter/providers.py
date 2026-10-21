@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import base64
 import io
 import json
@@ -41,7 +41,7 @@ class Providers:
             payload = {**payload, **self.text_options()}
         key = self.s.get(prefix + '_API_KEY')
         if not key:
-            raise ProviderError(prefix + ' credential is not configured')
+            raise ProviderError(prefix + ' API Key is not configured', code='configuration')
         url = self.s.get(prefix + '_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
         response = await self.http.post(url.rstrip('/') + '/chat/completions',
             headers={'Authorization': 'Bearer ' + key}, json=payload)
@@ -56,6 +56,13 @@ class Providers:
 
     async def transcribe(self, pcm):
         audio = base64.b64encode(wav_bytes(pcm)).decode()
+        if self.s.get('OMNI_PROTOCOL') == 'chat-audio':
+            result = await self.completion('OMNI', {
+                'model': self.s.get('OMNI_MODEL'), 'stream': False,
+                'messages': [{'role': 'user', 'content': [
+                    {'type': 'input_audio', 'input_audio': {'data': audio, 'format': 'wav'}},
+                    {'type': 'text', 'text': 'Transcribe the audio verbatim. Return only the transcript.'}]}]})
+            return result['choices'][0]['message']['content'].strip()
         result = await self.completion('OMNI', {
             'model': self.s.get('OMNI_MODEL', 'qwen3-asr-flash'), 'stream': False,
             'messages': [{'role': 'user', 'content': [{'type': 'input_audio',

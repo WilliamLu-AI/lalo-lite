@@ -11,11 +11,22 @@ let lastPong=Date.now(),micGeneration=0,micStarting=false;
 let projectDir='',host='',responding=false,selectedText='',settingsDraft=null,settingsApplied=false;
 let appliedConfig=null,pendingConfig=null,configSequence=0;
 const nodes=new Set();
-const voiceSettings=createVoiceSettings({stopMic});
+const voiceSettings=createVoiceSettings({stopMic,onDiagnostics:showReadiness});
 let outputContext,holding=false,answerBubble=null,outputAnalyser,inputLevel=0;
 const sentenceCounts=new Map(),sentenceEnds=new Set();
 const sample='# 方案讲解助手\n\n边看方案，边与 AI 讨论。在 Codex 或 Claude Code 中运行 present-plan，带入方案和当前会话开始讲解。\n\n## 第一章：目标\n\n帮助读者理解方案的结构、设计理由与取舍。支持提问、插话，以及回到原来的讲解位置。\n\n## 第二章：语音\n\n播放期间麦克风持续工作。检测到用户讲话后停止播报，再识别问题并作答。回声消除由浏览器音频链路承担，需要在实际设备上验收。\n\n## 第三章：阅读器\n\nAI 提供段落编号，阅读器负责滚动、高亮和选区回传。只有播放真正完成后，才执行约定的下一段定位。\n';
 function status(text){$('status').textContent=text;}
+function showReadiness(data){
+  if(!data)return;
+  let panel=$('readinessPanel');
+  if(!panel){panel=document.createElement('details');panel.id='readinessPanel';panel.className='readiness-panel';const summary=document.createElement('summary');summary.id='readinessSummary';const list=document.createElement('ul');list.id='readinessDetails';panel.append(summary,list);$('messages').before(panel);}
+  const labels={asr:'ASR 语音识别',tts:'TTS 语音合成',llm:'独立问答模型',codex:'Codex',claude:'Claude Code',frontend:'页面资源',runtime:'语音运行时',tad:'可选话轮检测'};
+  const items=Object.entries(data.readiness||{});const missing=items.filter(([key,value])=>!value.ready&&!['tad','codex','claude'].includes(key));
+  $('readinessSummary').textContent=missing.length?'配置待完善：'+missing.map(([key])=>labels[key]).join('、'):'配置检查完成 · 连接尚未验证';
+  $('readinessDetails').replaceChildren();for(const [key,value]of items){const li=document.createElement('li');li.textContent=(labels[key]||key)+'：'+value.message;$('readinessDetails').append(li);}
+  const note=document.createElement('li');note.textContent='尚未验证模型连接；配置完整后，请在设置 → 语音模型中分别测试。';$('readinessDetails').append(note);
+  const option=$('mode').querySelector('[value="tiered"]');option.disabled=!data.capabilities?.tiered;
+}
 function renderControls(){
   const engaged=active||micStarting||responding;
   $('start').textContent=micStarting?'取消开启':active?'结束对话':responding?'停止讲解':'开始对话';
@@ -108,7 +119,7 @@ function connect(){
   ws=new WebSocket('ws://'+location.host+'/ws');let received=Promise.resolve();
   ws.onmessage=e=>{received=received.then(async()=>{
     const data=JSON.parse(e.data);lastPong=Date.now();
-    if(data.type==='ready'){const tieredOption=$('mode').querySelector('[value="tiered"]');tieredOption.disabled=!data.capabilities?.tiered;if($('mode').value==='tiered'&&tieredOption.disabled){$('mode').value=host==='claude'?'claude':'codex';appliedConfig=null;}await voiceSettings.load();session=data.session;epoch=data.epoch;blocked=true;stopPlayback();$('connection').textContent='已连接';configure();return;}
+    if(data.type==='ready'){showReadiness(data);const tieredOption=$('mode').querySelector('[value="tiered"]');tieredOption.disabled=!data.capabilities?.tiered;if($('mode').value==='tiered'&&tieredOption.disabled){$('mode').value=host==='claude'?'claude':'codex';appliedConfig=null;}await voiceSettings.load();session=data.session;epoch=data.epoch;blocked=true;stopPlayback();$('connection').textContent='已连接';configure();return;}
     if(data.session!==session||data.epoch<epoch)return;
     if(data.epoch>epoch){epoch=data.epoch;stopPlayback();}
     if(data.type==='interrupted'){stopPlayback();blocked=true;responding=false;}
@@ -116,7 +127,7 @@ function connect(){
     if(data.type==='turn_empty'){responding=false;}
     if(data.type==='configured'){if(data.configId!==undefined&&data.configId!==pendingConfig?.configId)return;configured=true;blocked=false;$('configState').textContent=`已加载 ${data.blocks} 个段落`;$('locatorInfo').textContent=data.locator==='flash'?'段落定位：Flash':data.locator==='jev'?'章节定位：Jev':'段落定位：讲解模型';showBinding(data);try{localStorage.setItem('lalo-model-preference',JSON.stringify({mode:data.mode||appliedConfig.mode,model:data.codexModel??appliedConfig.codexModel}));}catch{}status(active?'正在聆听':'准备就绪');if($('settingsDialog').open&&settingsApplied)$('settingsDialog').close();view();}
     if(data.type==='context_ready')showBinding(data);
-    if(data.type==='microphone_revoked'){stopMic();stopPlayback();responding=false;status('另一页面已开始对话，本页麦克风已停止');}
+    if(data.type==='microphone_revoked'){stopMic();stopPlayback();responding=false;status(data.reason==='configuration'?'语音配置不完整，请打开设置 → 语音模型':'另一页面已开始对话，本页麦克风已停止');}
     if(data.type==='status')status(data.message);
     if(data.type==='location'){
       const descriptions={selected:'已匹配章节',uncertain:'判断不确定，保持当前位置',timeout:'请求超时，保持当前位置',http_451:'服务限制访问，保持当前位置',not_configured:'未配置密钥，保持当前位置',document_too_large:'文档超出定位范围，保持当前位置',empty_document:'文档为空',invalid_response:'响应无效，保持当前位置',network_error:'网络错误，保持当前位置'};
@@ -134,7 +145,7 @@ function connect(){
     if(data.type==='audio')await play(data);
     if(data.type==='audio_end'&&!blocked){playEnd=true;playbackDone();}
     if(data.type==='navigate'&&!blocked){const moved=navigate(data.blockId);if(moved&&follow&&$('auto').checked)await ask('请逐段讲解当前段落，讲完后前进到下一段。');}
-    if(data.type==='error'){responding=false;stopPlayback();const stage={asr:'语音识别',model:'模型回答',tts:'语音合成'}[data.stage]||'请求';const detail=stage+'失败：'+data.message;status(detail);message('assistant',detail);}
+    if(data.type==='error'){responding=false;stopPlayback();const stage={asr:'语音识别',model:'模型回答',tts:'语音合成'}[data.stage]||'请求';const detail=stage+'失败'+(data.code?' ['+data.code+']':'')+'：'+data.message;status(detail);message('assistant',detail);}
     renderControls();
   }).catch(err=>{responding=false;renderControls();send({type:'client_event',event:'client_failed'});status('处理失败：'+err.message);});};
   ws.onclose=()=>{configured=false;responding=false;blocked=true;stopPlayback();stopMic();$('connection').textContent='连接断开，正在重连';status('语音已停止。连接恢复后请重新开始语音。');reconnectTimer=setTimeout(connect,1500);};

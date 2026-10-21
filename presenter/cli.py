@@ -119,6 +119,7 @@ def child_command():
 
 def ensure_server():
     from .paths import DATA_ROOT, ensure_data
+    check_frontend()
     ensure_data()
     current = running_server()
     if current:
@@ -186,6 +187,7 @@ def initialize(model_file=None, download=False):
 
 def serve():
     from .paths import DATA_ROOT, ensure_data
+    check_frontend()
     ensure_data()
     token = secrets.token_hex(32)
     os.environ['LALO_SESSION_TOKEN'] = token
@@ -210,6 +212,12 @@ def serve():
                 file.unlink()
         except (OSError, ValueError):
             pass
+
+
+def check_frontend():
+    from .paths import RESOURCE_ROOT
+    if not (RESOURCE_ROOT / 'web/app.bundle.js').is_file():
+        raise ValueError('Frontend is not built. In the source checkout run: npm ci; npm run build')
 
 
 def main():
@@ -242,10 +250,10 @@ def main():
             result = initialize(args.model_file, args.download_model)
         elif args.command == 'doctor':
             from .settings import Settings
+            from .readiness import report
             result = {'version': VERSION, 'dataDirectory': str(DATA_ROOT),
                 'configExists': (DATA_ROOT / '.env').exists(),
-                'frontendReady': (RESOURCE_ROOT / 'web/app.bundle.js').exists(),
-                'capabilities': Settings().capabilities(), 'running': bool(running_server())}
+                **report(Settings()), 'running': bool(running_server())}
         elif args.command == 'stop':
             current = running_server()
             result = local_request(current, '/shutdown', 'POST') if current else {'stopped': False, 'reason': 'not_running'}
@@ -254,6 +262,10 @@ def main():
             document = getattr(args, 'document', None)
             mode = getattr(args, 'mode', 'cloud')
             session, host = source_id(mode, getattr(args, 'session', None))
+            if mode=='claude' or (mode=='tiered' and host=='claude'):
+                from .settings import Settings
+                from .commands import claude_command
+                claude_command(Settings().get('CLAUDE_COMMAND'))
             launch = prepare(DATA_ROOT, args.project, document, mode, session, host) if document else None
             info = ensure_server()
             url = f'http://127.0.0.1:{info["port"]}/#access={info["token"]}'

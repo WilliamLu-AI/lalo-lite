@@ -8,9 +8,10 @@ from typing import Protocol
 class ProviderError(Exception):
     """An actionable, bounded provider error safe to show to the reader."""
 
-    def __init__(self, message, *, stage=None):
+    def __init__(self, message, *, stage=None, code='provider'):
         super().__init__(message)
         self.stage = stage
+        self.code = code
 
 
 class GenerationBackend(Protocol):

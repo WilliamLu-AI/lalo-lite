@@ -1,6 +1,5 @@
 ﻿"""Session-scoped native/LiveKit bridge. No LiveKit room or cloud required."""
 import asyncio
-from urllib.parse import urlsplit
 from types import SimpleNamespace
 from async_timeout import timeout
 from ..providers import Providers
@@ -51,19 +50,19 @@ class VoiceProviders:
         values = dict(settings.values)
         for kind, prefix in [('asr','OMNI'),('tts','MINIMAX'),('llm','OPENAI')]:
             p = profiles[kind]
-            values[prefix+'_API_KEY'] = p['apiKey'] or ('local-no-key' if p['provider']=='compatible' else '')
-            if p['baseUrl']: values[prefix+'_BASE_URL'] = p['baseUrl']
+            values[prefix+'_API_KEY'] = p['apiKey'] or ('local-no-key' if p['provider'] in ('compatible','chat-audio') else '')
+            from ..voice_config import CATALOG
+            values[prefix+'_BASE_URL'] = p['baseUrl'] or CATALOG[p['provider']]['url']
             values[prefix+'_MODEL'] = p['model']
+        values['OMNI_PROTOCOL'] = profiles['asr']['provider']
         # Native Qwen streaming credentials must use the selected connection as well.
-        values['STREAMING_ASR_API_KEY'] = profiles['asr']['apiKey']
+        values['STREAMING_ASR_API_KEY'] = profiles['asr'].get('streamApiKey') or profiles['asr']['apiKey']
         if profiles['asr']['provider']=='qwen' and profiles['asr']['mode']=='stream':
             values['STREAMING_ASR_MODEL']=profiles['asr']['model']
-            values['OMNI_MODEL']='qwen3-asr-flash'
+            values['OMNI_MODEL']=profiles['asr'].get('fallbackModel','')
+            values['OMNI_BASE_URL']=profiles['asr'].get('fallbackBaseUrl','')
+        values['STREAMING_ASR_URL'] = profiles['asr'].get('streamUrl','')
         values['MINIMAX_VOICE_ID'] = profiles['tts']['voice']
-        asr_url=profiles['asr']['baseUrl']
-        if profiles['asr']['provider']=='qwen' and asr_url and asr_url!=settings.get('OMNI_BASE_URL','https://dashscope.aliyuncs.com/compatible-mode/v1'):
-            url=urlsplit(asr_url)
-            values['STREAMING_ASR_URL']=('wss' if url.scheme=='https' else 'ws')+'://'+url.netloc+'/api-ws/v1/inference'
         tts_url=profiles['tts']['baseUrl']
         if profiles['tts']['provider']=='minimax-native' and tts_url:
             values['MINIMAX_WS_URL']=tts_url.replace('https://','wss://').replace('http://','ws://').rstrip('/')+'/ws/v1/t2a_v2'
@@ -80,9 +79,13 @@ class VoiceProviders:
         # Explicit aiohttp session avoids a dependency on LiveKit's job context.
         import aiohttp
         self.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90), trust_env=True)
+        # Initialize configured plugins before real-time I/O; incomplete services
+        # remain lazy so an unused, unconfigured TTS cannot block the reader.
+        from ..readiness import model_readiness
         try:
-            self.model('asr')
-            self.model('tts')
+            for kind in ('asr','tts'):
+                if model_readiness(self.profiles[kind],kind)['ready']:
+                    self.model(kind)
             return self
         except BaseException:
             await self.close()
@@ -91,7 +94,7 @@ class VoiceProviders:
     def make_model(self, kind):
         p = self.profiles[kind]
         provider = p['provider']
-        if provider in ('qwen','minimax-native'): return None
+        if provider in ('qwen','chat-audio','minimax-native'): return None
         if provider == 'qwen-tts' and kind == 'tts':
             from .qwen_tts import QwenTTS
             if not p['apiKey']: raise ValueError('Qwen TTS requires an API Key')
@@ -126,14 +129,38 @@ class VoiceProviders:
             self.initialized.add(kind)
         return getattr(self, kind+'_model')
 
+    def require(self, kind):
+        from ..readiness import model_readiness
+        state = model_readiness(self.profiles[kind], kind)
+        if not state['ready']:
+            raise ProviderError(state['message']+'；请打开设置 → 语音模型', stage='model' if kind=='llm' else kind, code='configuration')
+
+    @property
+    def can_fallback(self):
+        p = self.profiles['asr']
+        return p['provider']=='qwen' and bool(p.get('fallbackModel') and p.get('fallbackBaseUrl'))
+
+    async def answer(self, messages):
+        self.require('llm')
+        return await self.native.answer(messages)
+
+    async def answer_stream(self, messages):
+        self.require('llm')
+        async for part in self.native.answer_stream(messages):
+            yield part
+
     def start_asr(self, on_partial, frames):
         if self.profiles['asr']['mode'] != 'stream': return None
+        self.require('asr')
         self.model('asr')
         stream = LiveRecognition(self.asr_model, on_partial) if self.asr_model else StreamingASR(self.settings, on_partial)
         stream.start(frames)
         return stream
 
     async def transcribe(self, pcm):
+        self.require('asr')
+        if self.profiles['asr']['provider']=='qwen' and self.profiles['asr']['mode']=='stream' and not self.can_fallback:
+            raise ProviderError('未配置整句恢复模型和地址；请检查实时识别连接或在设置中配置整句恢复', stage='asr', code='configuration')
         self.model('asr')
         if not self.asr_model: return await self.native.transcribe(pcm)
         from livekit import rtc
@@ -148,6 +175,7 @@ class VoiceProviders:
         return result.alternatives[0].text if result.alternatives else ''
 
     async def speech(self, text):
+        self.require('tts')
         self.model('tts')
         if not self.tts_model:
             async for chunk in self.native.speech(text): yield chunk

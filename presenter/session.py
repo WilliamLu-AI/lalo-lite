@@ -1,8 +1,6 @@
 ﻿import asyncio
 import json
 import logging
-import os
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -153,14 +151,8 @@ class Session:
         if (self.mode == 'codex' or (self.mode == 'tiered' and self.host == 'codex')) and self.codex_model not in ('','gpt-6.1-sol','gpt-6-astra'):
             raise ValueError('Unsupported Codex model')
         if self.mode == 'claude' or (self.mode == 'tiered' and self.host == 'claude'):
-            try:
-                command = json.loads(self.settings.get('CLAUDE_COMMAND'))
-                if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
-                    raise ValueError
-                if not os.path.isfile(command[0]) and not shutil.which(command[0]):
-                    raise ValueError
-            except (ValueError, json.JSONDecodeError):
-                raise ValueError('CLAUDE_COMMAND 未配置或格式错误：请在 .env 中设为 JSON 数组，如 ["claude 可执行文件路径"]')
+            from .commands import claude_command
+            claude_command(self.settings.get('CLAUDE_COMMAND'))
         self.cwd = Path(data.get('cwd') or ROOT).resolve()
         if not self.cwd.is_dir():
             raise ValueError('Project directory does not exist')
@@ -263,7 +255,7 @@ class Session:
             await self.discard_backend()
             # Deliberately bounded errors; SDK exception strings can contain request data.
             message = str(exc) if isinstance(exc, ProviderError) else type(exc).__name__
-            await turn_send('error', message=message, stage=self.stage, code=type(exc).__name__)
+            await turn_send('error', message=message, stage=self.stage, code=getattr(exc,'code',type(exc).__name__))
 
     @property
     def codex(self):
@@ -355,7 +347,9 @@ class Session:
         try:
             try:
                 text = await asr.finish() if asr else await self.providers.transcribe(pcm)
-            except Exception:
+            except Exception as exc:
+                if not asr or getattr(exc, 'code', '')=='configuration' or not getattr(self.providers,'can_fallback',True):
+                    raise
                 await self.send('status', message='流式识别暂不可用，正在用整句识别恢复')
                 text = await self.providers.transcribe(pcm)
             text = (self.pending_prefix + ' ' + text).strip()
@@ -372,10 +366,11 @@ class Session:
                 await self.send('status', message='未识别到内容，继续聆听')
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             self.holding = False
             await self.send('playback_resume')
-            await self.send('error', message='语音识别失败，请重试', stage='asr', code='recognition')
+            await self.send('error', message=str(exc) if isinstance(exc,ProviderError) else '语音识别连接或响应异常，请在设置中测试 ASR 地址、模型和凭据',
+                            stage='asr', code=getattr(exc,'code','recognition'))
         finally:
             if asr:
                 await asr.close()
@@ -456,6 +451,13 @@ class Session:
             self.journal.record('client_' + kind, self.epoch, self.stage, self.mode, receivedEpoch=data.get('epoch'), sentence=data.get('sentence'))
         if kind == 'client_event':
             event = data.get('event')
+            if event=='mic_started' and self.voice_providers:
+                try:
+                    self.voice_providers.require('asr')
+                except ProviderError as exc:
+                    await self.send('microphone_revoked', reason='configuration')
+                    await self.send('error', message=str(exc), stage='asr', code=exc.code)
+                    return
             if event == 'navigation_applied':
                 fields={k:data.get(k) for k in ('blockId','follow','force','visible','before','after','targetTop','targetBottom','readerTop','readerBottom','build')}
                 self.journal.record(event,self.epoch,self.stage,self.mode,**fields)
