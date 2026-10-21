@@ -1,0 +1,16 @@
+{
+  "name": "lalo-lite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild web/app.js --bundle --minify --format=esm --outfile=web/app.bundle.js"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.7",
+    "marked": "^16.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "license": "Apache-2.0"
+}

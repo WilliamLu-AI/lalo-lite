@@ -1,0 +1,11 @@
+{
+  "model_repository": "https://huggingface.co/pipecat-ai/smart-turn-v3",
+  "model_revision": "f766f81d3cfdf7737ac64aad813d91bbfd56bf93",
+  "license": "BSD-2-Clause",
+  "files": {
+    "smart-turn-v3.2-cpu.onnx": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
+    "inference.py": "39a6422beb864788a4428e631ba7c45a69ce4c58e913ead383450766b9bd8683",
+    "audio_utils.py": "22fed11a57d019350d6e4821895ce749220ed06203220e8c44a7c32ab31f2595",
+    "LICENSE": "0d66364067f678c08586ebb60a16a2aed4fa081ec11057df35585759ce0e774f"
+  }
+}

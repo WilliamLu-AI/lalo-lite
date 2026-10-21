@@ -1,59 +1,80 @@
 ﻿# Lalo Lite
 
-用语音讲解和问答，帮助你读懂 Markdown、HTML 与文本方案。
+通过语音讲解和问答，帮助你阅读 Markdown、HTML 与文本方案。
 
-## 开始使用
+- 围绕文档提问，边听解释边定位内容块。
+- 支持连续讲解、打断、续讲、播放倍速和自动跟随。
+- 可连接 Codex 或 Claude Code 的当前会话，也可使用独立问答模型。
+- ASR、TTS 和 LLM 分别配置，支持 Native 与 LiveKit AgentSession 两种语音运行时。
 
-请先安装 Git 与 Git LFS，再下载完整仓库：
+## 安装与启动
+
+需要 Python 3.10+、Node.js 20+。当前已验证 Windows；其他系统的设备与 CLI 兼容性需自行验证。
 
 ```powershell
-git lfs install
 git clone https://github.com/WilliamLu-AI/lalo-lite.git
 cd lalo-lite
-git lfs pull
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements-lock.txt
+npm ci
+npm run build
+.venv/Scripts/python.exe lalo.py
 ```
 
-请勿直接使用 GitHub 的“Download ZIP”：主程序通过 Git LFS 分发，需要下载真实二进制，不能只保留指针文件。
+安装后也可以运行 `start.ps1`。macOS / Linux 使用 `.venv/bin/python`，启动入口为 `start.sh`。
 
-获取完整仓库后，直接运行 `app/windows-x64/lalo.exe`，应用会在浏览器中打开。不需要另外解压应用包，也不需要安装 Python 或 Node.js。请保留 app 目录中的全部文件。
-
-在仓库根目录打开自己的文档：
+打开自己的文档：
 
 ```powershell
-.\app\windows-x64\lalo.exe open --document "D:\documents\proposal.md"
+.venv/Scripts/python.exe lalo.py open --document "D:\documents\proposal.md"
 ```
 
-使用 AI 问答及语音前，打开右上角“设置 → 语音模型”，添加厂商连接和凭据，再分别选择 ASR、TTS 和独立问答模型并保存。Codex / Claude 及源会话在“模型与会话”中选择。也可通过首次启动生成的 `%LOCALAPPDATA%\LaloLite\.env` 设置初始配置。页面配置保存在用户数据目录的 `voice-config/`，请勿分享该目录。对应服务商可能收取费用。
-
-首次使用语音，下载约 8.3 MiB 的语音模型：
+浏览器只是阅读入口，关闭页面不会退出本地服务。退出服务：
 
 ```powershell
-.\app\windows-x64\lalo.exe init --download-model
+.venv/Scripts/python.exe lalo.py stop
 ```
 
-下载后重启。关闭浏览器不会退出后台应用，退出请执行：
+## 模型与语音
+
+打开右上角“设置 → 语音模型”，添加厂商连接和 API Key，再分别选择 ASR、TTS 和独立问答模型并保存。Codex / Claude Code 需预先安装并登录，在“模型与会话”中选择。
+
+| 接入方式 | ASR | TTS | LLM |
+| --- | --- | --- | --- |
+| 千问 | 流式、整句 | Qwen3-TTS-Flash、Realtime | OpenAI 兼容接口 |
+| MiniMax | — | 原生连接、LiveKit 插件 | — |
+| OpenAI | 整句识别 | LiveKit 插件 | Chat Completions |
+| ElevenLabs | 实时识别 | LiveKit 插件 | — |
+| OpenAI 兼容服务 | 按服务能力 | 按服务能力 | 按服务能力 |
+
+并非所有型号都支持相同参数；选择具体型号后请先测试连接或试听。OpenAI Realtime 一体化语音接口尚未适配。
+
+千问 TTS 连接选择“千问 TTS”：北京地址为 `https://dashscope.aliyuncs.com`，新加坡地址为 `https://dashscope-intl.aliyuncs.com`，使用对应地域的百炼 Key。模型填写 `qwen3-tts-flash` 或 `qwen3-tts-flash-realtime`，音色例如 `Cherry`。
+
+首次使用语音可安装话轮检测模型：
 
 ```powershell
-.\app\windows-x64\lalo.exe stop
+.venv/Scripts/python.exe lalo.py init --download-model
 ```
 
-当前是未签名 Windows x64 预览版，macOS 版本尚未提供。
+模型约 8.3 MiB，按锁定版本下载并校验，不包含在仓库中。下载后重启服务。
 
-## 在 Codex 或 Claude Code 中使用
+默认使用 NativeRuntime。使用 LiveKit AgentSession 时，在用户数据目录的 `.env` 中设置 `VOICE_RUNTIME=livekit`，然后重启服务。本地一人一 AI 使用现有浏览器与 WebSocket，不需要另起 LiveKit Room 服务。
 
-在仓库根目录运行以下命令，可安装到两个工具：
+## 在当前聊天中使用
+
+`skills/present-plan` 是面向使用者的文档讲解入口。Windows 可在完成安装后运行：
 
 ```powershell
 .\install-skill.ps1 -HostName both
 ```
 
-仅安装一个工具时，将 `both` 换成 `codex` 或 `claude`。脚本不需要管理员权限，会记录应用位置；移动仓库后重新安装。已有非本安装器管理的同名 Skill 时会停止，请先自行备份处理。若系统策略阻止脚本运行，请先审阅脚本，再按你的设备管理要求允许运行。
-
-重新打开或刷新工具后，在方案所在聊天中使用 `$present-plan`（Codex）或 `/present-plan`（Claude Code），并指定文档。对应 CLI 需事先安装并登录。
+刷新 Codex 或 Claude Code 后，在文档所在聊天使用 `$present-plan` 或 `/present-plan`。安装器只记录源码目录的位置；移动仓库后需重新运行。
 
 ## 数据与许可
 
-- 本地配置和使用记录保存在用户目录。不要分享配置文件或应用生成的私人链接。
-- 使用 AI 服务时，必要的文档、问题和音频会发送给你配置的服务商。
-- 应用闭源分发，用户使用的 present-plan Skill 采用 Apache-2.0。
-- 应用和第三方许可随 app 目录提供，文件校验值位于 `app/windows-x64/SHA256SUMS`。
+配置、加密凭据和本地使用记录保存在用户数据目录：Windows 默认为 `%LOCALAPPDATA%/LaloLite/`，macOS 为 `~/Library/Application Support/LaloLite/`，Linux 为 `~/.local/share/lalo-lite/`。可通过 `LALO_HOME` 更改位置。
+
+仓库中的 `.env.example` 仅包含空凭据示例。请在界面或用户数据目录中填写自己的配置，不要提交 API Key、聊天记录、音频或用户数据目录。调用服务商时，必要的文档、问题和音频会发送给所选服务商，对应服务可能收费。
+
+本项目采用 [Apache-2.0](LICENSE)。字体、话轮模型和依赖保留各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

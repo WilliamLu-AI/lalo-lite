@@ -1,0 +1,5 @@
+# Optional LiveKit bridge, tested together; MiniMax's official package has -ai suffix.
+livekit-agents==1.8.8
+livekit-plugins-openai==1.8.8
+livekit-plugins-elevenlabs==1.8.8
+livekit-plugins-minimax-ai==1.8.8
