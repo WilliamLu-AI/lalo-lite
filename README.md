@@ -4,12 +4,13 @@
 
 - 围绕文档提问，边听解释边定位内容块。
 - 支持连续讲解、打断、续讲、播放倍速和自动跟随。
+- 支持同一局域网内多人共同阅读、收听讲解与提问，由主持人控制共同位置。
 - 可连接 Codex 或 Claude Code 的当前会话，也可使用独立问答模型。
 - ASR、TTS 和 LLM 分别配置，支持 Native 与 LiveKit AgentSession 两种语音运行时。
 
 ## 安装与启动
 
-需要 Python 3.10+、Node.js 20+。当前已验证 Windows；其他系统的设备与 CLI 兼容性需自行验证。
+需要 Python 3.10–3.13、Node.js 22.22+。当前已验证 Windows；其他系统的设备与 CLI 兼容性需自行验证。
 
 ```powershell
 git clone https://github.com/WilliamLu-AI/lalo-lite.git
@@ -108,6 +109,62 @@ ASR 协议需要与服务端实际接口一致：
 `CLAUDE_COMMAND` 可以直接填写可执行文件路径（含空格也无需拆分），例如 `C:/Tools/Claude/claude.exe`。需要固定参数时使用 JSON 数组，例如 `["C:/Tools/Claude/claude.exe", "参数"]`；不会通过 Shell 拆分或执行命令字符串。选择 Claude 启动时会提前校验命令。
 
 Claude Code 会在最终结果成功、完整讲解格式校验通过后开始播报；普通前言与工具中间候选不会作为讲解内容。支持最终 `structured_output`、完整的 `StructuredOutput` 工具结果，以及普通 JSON 返回。
+
+## 局域网共同讲解（LiveKit Room）
+
+同一局域网内，一台电脑运行 Lalo 并担任主持人，其他电脑通过邀请链接参加。参会人可阅读同一文档、独立浏览和恢复跟随、文字提问或申请后按住说话。主持人控制讲解、同步共同位置及结束会议；回答新问题后等待主持人继续。
+
+先准备可用的 LiveKit 服务及浏览器可访问的 WSS 地址。Lalo 不会通过以下命令安装或启动 LiveKit。HTTPS 页面不能连接不安全的 WS 地址；LiveKit 的媒体端口也必须对局域网设备可达。会议采用内存状态，关闭服务会结束会议，旧邀请不能恢复。
+
+在 `lalo doctor` 显示的 dataDirectory 下修改 `.env`（也可用 `--home` 指定专用数据目录）。沿用该目录已有的模型配置，并补充：
+
+```dotenv
+LALO_MEETING_PUBLIC_URL=https://192.168.1.10:8444
+LALO_MEETING_TLS_CERT=C:/Lalo/certs/server.pem
+LALO_MEETING_TLS_KEY=C:/Lalo/certs/server.key
+LALO_MEETING_TLS_CA=C:/Lalo/certs/root-ca.pem
+LIVEKIT_URL=ws://127.0.0.1:7880
+LIVEKIT_PUBLIC_URL=wss://192.168.1.10:8443/livekit
+LIVEKIT_API_KEY=替换为自己的应用标识
+LIVEKIT_API_SECRET=替换为自己的密钥
+```
+
+地址和路径都是示例，需要替换。`LIVEKIT_URL` 是 Lalo 后端使用的信令地址，`LIVEKIT_PUBLIC_URL` 是参会浏览器使用的信令地址；它们应指向同一个 LiveKit 服务。API Key 和 Secret 仅供服务端使用。
+
+证书需包含主机局域网地址以及 `127.0.0.1`，并被两台电脑的浏览器信任。使用私有 CA 时，`LALO_MEETING_TLS_CA` 指定其根证书，供本机 CLI 验证 HTTPS；使用系统已信任的证书可留空。浏览器的信任需要单独配置一次。仅把证书路径填进 `.env` 不会自动安装信任，也不需要每次测试重新安装证书。
+
+启动前停止同一数据目录下的普通服务，然后在一个终端运行：
+
+```powershell
+.venv/Scripts/python.exe lalo.py stop
+.venv/Scripts/python.exe lalo.py serve --meeting
+```
+
+保留这个终端，在另一个终端打开方案：
+
+```powershell
+.venv/Scripts/python.exe lalo.py open --document C:/Lalo/proposal.md --mode cloud
+```
+
+也可使用下方多人会议 Skill 或 `open --mode codex/claude --session ...` 绑定源会话。`open` 会复用正在运行的 HTTPS 服务。若使用 `--home`，启动、打开与停止时须指定同一目录。
+
+主持人在正式阅读器点击“开始会议”，把邀请链接发给参会人。主持人入会后申请麦克风权限并持续监听：直接说话，停顿后自动识别和回答，AI 讲解／回答期间疑似插话先短暂降低音量，识别确认是有效提问后才打断当前播报；底部按钮只用于“静音麦克风／开启麦克风”，不再逐句提交。权限被拒绝时需允许麦克风后点击开启；断线后为避免误收音，需要手动重新开启。参会人仍先申请发言，获准后按住说话、松开提交；排队和识别期间可取消自己的申请，切换窗口会提交其当前录音。参会人已获得语音发言权或正在识别时，主持人的自动提问暂不抢占该发言。参会人可独立开启／静音播放，没有麦克风也能文字提问和收听。停顿检测复用当前 VAD（约 0.7 秒静音），不是语义完成保证。低频轰鸣经过输入过滤；“嗯、啊、哦”等附和通常不打断，AI 最后一句为问句时保留简短回答。“停、暂停一下、等一下”识别后直接暂停。疑似插话降音量最多持续 1.5 秒，识别失败或误触发会恢复原音量，不重新生成讲解；实体外放环境的回声抑制仍需继续优化。
+
+
+主持人可先浏览到目标段落，再点击“同步当前位置”；该操作暂停讲解并更新共同位置。其他人的独立浏览不会被强制打断。主持人刷新或连接恢复后需要手动继续，刷新保留身份仅限同一浏览器标签页；清空存储或关闭服务后不能据此恢复。
+
+本模式显式监听局域网，默认单人模式仍只监听本机。允许参会设备访问 Lalo 的 HTTPS 端口、LiveKit 的 WSS 和媒体端口即可；不要将本机配置接口转发到公网。当前不提供真实桌面共享、公网部署或外放自然插话的完整验收保证。
+### 多人会议 Skill
+
+完成源码安装和前端构建后，安装用户入口：
+
+```powershell
+.\install-skill.ps1 -HostName both -SkillName lalo-meeting
+```
+
+刷新 Codex 或 Claude Code 后，使用 `$lalo-meeting` 或 `/lalo-meeting`，例如“用这个方案开一个多人讲解会议”。它会检查并复用会议服务、打开主持人阅读器并准备参会邀请；首次使用仍需配置 LiveKit 和 HTTPS。`-SkillName both` 可同时安装单人讲解与多人会议两个 Skill。
+
+会议中的参会人可以看到共享文档、听到讲解与其他人的发言；请只邀请允许访问该文档的人。主持人启动链接与参会邀请不同，只分享界面生成的邀请链接。结束会议后邀请失效；关闭服务会结束所有内存中的会议。
 
 ## 数据与许可
 

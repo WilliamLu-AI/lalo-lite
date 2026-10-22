@@ -7,6 +7,7 @@ class Segmenter:
     """Accept 20ms PCM16 mono 16kHz frames. No audio is persisted."""
     def __init__(self):
         self.vad = webrtcvad.Vad(3)
+        self.window = np.hanning(320)
         self.pre = deque(maxlen=15)
         self.frames = []
         self.active = False
@@ -19,6 +20,11 @@ class Segmenter:
             raise ValueError('Expected 640 byte PCM frame')
         pcm = np.frombuffer(frame, dtype='<i2').astype(np.float32) / 32768
         voice = self.vad.is_speech(frame, 16000) and float(np.sqrt(np.mean(pcm * pcm))) > .006
+        if voice:
+            # Reject almost-pure sub-150Hz rumble (e.g. floor/desk impacts).
+            # Keep harmonics so low-pitched speech is not rejected just for its pitch.
+            energy = np.abs(np.fft.rfft(pcm * self.window)) ** 2
+            voice = float(energy[3:].sum()) >= .03 * max(float(energy.sum()), 1e-12)
         self.revision += 1
         self.voiced = self.voiced + 1 if voice else 0
         self.silent = 0 if voice else self.silent + 1

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lalo Meeting"
+  short_description: "Host shared document explanations with LiveKit Room"
+  default_prompt: "Use $lalo-meeting to open a shared Lalo document meeting and prepare an attendee invitation."

@@ -6,6 +6,7 @@ import os
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -89,8 +90,18 @@ def local_request(info, path, method='GET'):
     port = info.get('port')
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError('Invalid local server port')
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    request = urllib.request.Request(f'http://127.0.0.1:{port}' + path, method=method,
+    scheme = info.get('scheme', 'http')
+    if scheme not in ('http', 'https'):
+        raise ValueError('Invalid local server scheme')
+    handlers = [urllib.request.ProxyHandler({})]
+    if scheme == 'https':
+        try:
+            context = ssl.create_default_context(cafile=info.get('tls_ca') or None)
+        except OSError as error:
+            raise ValueError('Cannot load the local HTTPS certificate authority; check LALO_MEETING_TLS_CA') from error
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(*handlers)
+    request = urllib.request.Request(f'{scheme}://127.0.0.1:{port}' + path, method=method,
         headers={'Authorization': 'Bearer ' + info['token']})
     with opener.open(request, timeout=2) as response:
         return json.load(response)
@@ -104,6 +115,10 @@ def running_server():
         if value.get('app') == 'lalo-lite' and value.get('launchProtocol') == 2 and value.get('version') == VERSION:
             return info
         raise ValueError('A different Lalo Lite version is running. Stop it before starting this version.')
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, ssl.SSLError):
+            raise ValueError('Cannot verify the running HTTPS service certificate; check LALO_MEETING_TLS_CA and certificate names') from error
+        return None
     except (OSError, KeyError, json.JSONDecodeError):
         return None
 
@@ -185,22 +200,34 @@ def initialize(model_file=None, download=False):
     return {'config': str(configuration), 'modelInstalled': MODEL_PATH.exists()}
 
 
-def serve():
+def serve(meeting=False):
     from .paths import DATA_ROOT, ensure_data
     check_frontend()
     ensure_data()
+    options = None
+    if meeting:
+        from .settings import Settings
+        from .meeting_launch import listener_options
+        options = listener_options(Settings())
+        if running_server():
+            raise ValueError('A Lalo service is already running; stop it before starting meeting mode')
     token = secrets.token_hex(32)
     os.environ['LALO_SESSION_TOKEN'] = token
     import uvicorn
     from .server import app
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(('127.0.0.1', 0))
+    bind_host = '0.0.0.0' if meeting else '127.0.0.1'
+    listener.bind((bind_host, options['port'] if options else 0))
     listener.listen(128)
     info = {'port': listener.getsockname()[1], 'token': token, 'pid': os.getpid(), 'version': VERSION}
+    if options:
+        info.update(scheme='https', tls_ca=options['ca'], meeting_public_url=options['public_url'])
     file = DATA_ROOT / 'run/server.json'
-    server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=info['port'],
+    tls = {'ssl_certfile': options['certfile'], 'ssl_keyfile': options['keyfile']} if options else {}
+    server = uvicorn.Server(uvicorn.Config(app, host=bind_host, port=info['port'],
         loop='asyncio', http='h11', ws='websockets', lifespan='on',
-        ws_max_size=4 * 1024 * 1024, access_log=False, timeout_graceful_shutdown=3))
+        ws_max_size=4 * 1024 * 1024, access_log=False, timeout_graceful_shutdown=3,
+        proxy_headers=False, **tls))
     app.state.shutdown = lambda: setattr(server, 'should_exit', True)
     atomic_json(file, info)
     try:
@@ -235,7 +262,8 @@ def main():
     models = init.add_mutually_exclusive_group()
     models.add_argument('--model-file')
     models.add_argument('--download-model', action='store_true')
-    commands.add_parser('serve', help='Run the private local service in the foreground')
+    served = commands.add_parser('serve', help='Run the service in the foreground')
+    served.add_argument('--meeting', action='store_true', help='Enable the configured HTTPS LAN meeting listener')
     commands.add_parser('doctor', help='Report configuration and capabilities without secrets')
     commands.add_parser('stop', help='Stop this user instance')
     args = parser.parse_args()
@@ -244,7 +272,7 @@ def main():
     try:
         from .paths import DATA_ROOT, RESOURCE_ROOT
         if args.command == 'serve':
-            serve()
+            serve(meeting=args.meeting)
             return
         if args.command == 'init':
             result = initialize(args.model_file, args.download_model)
@@ -268,7 +296,7 @@ def main():
                 claude_command(Settings().get('CLAUDE_COMMAND'))
             launch = prepare(DATA_ROOT, args.project, document, mode, session, host) if document else None
             info = ensure_server()
-            url = f'http://127.0.0.1:{info["port"]}/#access={info["token"]}'
+            url = f'{info.get("scheme", "http")}://127.0.0.1:{info["port"]}/#access={info["token"]}'
             if launch:
                 url += '&launch=' + launch
             result = {'url': url, 'mode': mode, 'source': session, 'host': host,

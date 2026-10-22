@@ -6,7 +6,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .settings import ROOT, Settings
 from .providers import Providers
 from .audio import TurnDetector
@@ -18,6 +17,7 @@ from .voice_config import VoiceConfig
 from .cli import VERSION
 from .readiness import report, load_voice_store
 from .contracts import ProviderError
+from .meeting_access import MeetingGuestBoundary, MeetingTrustedHost
 
 settings = Settings()
 
@@ -34,7 +34,8 @@ async def lifespan(app):
 
 app = FastAPI(lifespan=lifespan)
 voice_owner = VoiceOwner()
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1', '[::1]', 'testserver'])
+app.add_middleware(MeetingTrustedHost, settings=settings)
+app.add_middleware(MeetingGuestBoundary)
 app.mount('/static', StaticFiles(directory=ROOT / 'web'), name='static')
 
 
@@ -139,6 +140,10 @@ def authorized(connection):
     return supplied.isascii() and hmac.compare_digest(supplied, expected)
 
 
+from .meeting_http import meeting_router
+app.include_router(meeting_router(authorized, same_origin, settings))
+
+
 @app.middleware('http')
 async def protect_private_routes(request: Request, call_next):
     if request.url.path in ('/health', '/session', '/shutdown') or request.url.path.startswith(('/launch/', '/api/voice')):
@@ -155,7 +160,7 @@ async def protect_private_routes(request: Request, call_next):
 @app.post('/session')
 async def browser_session(request: Request):
     origin = request.headers.get('origin')
-    if origin and origin != 'http://' + request.headers.get('host', ''):
+    if origin and origin != str(request.base_url).rstrip('/'):
         raise HTTPException(status_code=403, detail='Invalid origin')
     response = JSONResponse({'ok': True})
     response.set_cookie('lalo_session', os.environ.get('LALO_SESSION_TOKEN', ''),
@@ -196,7 +201,8 @@ async def launch(token: str):
 @app.websocket('/ws')
 async def websocket(ws: WebSocket):
     origin = ws.headers.get('origin')
-    if origin != 'http://' + ws.headers.get('host', '') or not authorized(ws):
+    expected_origin = ('https://' if ws.url.scheme == 'wss' else 'http://') + ws.headers.get('host', '')
+    if origin != expected_origin or not authorized(ws):
         await ws.close(code=1008)
         return
     await ws.accept()

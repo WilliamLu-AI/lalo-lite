@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "dompurify": "^3.2.7",
+    "livekit-client": "2.23.0",
     "marked": "^16.0.0"
   },
   "devDependencies": {
